@@ -1,0 +1,43 @@
+# Helmet performance budgets.
+#
+# Each section maps to a criterion benchmark group/name.
+# p95_us = maximum acceptable p95 latency in microseconds.
+#
+# Budget philosophy:
+#   - Benign inputs must stay under 10us (sub-millisecond is table stakes).
+#   - Attack inputs with decode/rescan may be slightly slower, budget 50us.
+#   - Batch of 8 mixed inputs must stay under 100us total.
+#   - Budgets are set at ~3x measured baseline to absorb CI variance
+#     while still catching real regressions.
+#
+# Current baseline (measured 2026-04-04):
+#   benign/short              ~3 us
+#   benign/medium             ~3 us
+#   attack/simple_override    ~6 us
+#   attack/with_base64        ~9 us
+#   attack/multi_vector       ~9 us
+#   throughput/batch_8_mixed  ~50 us
+
+[benign/short]
+p95_us = 10
+
+[benign/medium]
+p95_us = 15
+
+[benign/long_4k_chars]
+p95_us = 150
+
+[attack/simple_override]
+p95_us = 25
+
+[attack/with_base64]
+p95_us = 35
+
+[attack/multi_vector]
+p95_us = 40
+
+[attack/zero_width_obfuscated]
+p95_us = 35
+
+[throughput/batch_8_mixed]
+p95_us = 200

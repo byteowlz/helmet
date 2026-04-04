@@ -1,0 +1,22 @@
+[package]
+name = "helmet-tui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "helmet-tui"
+path = "src/main.rs"
+
+[dependencies]
+helmet-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+env_logger.workspace = true
+log.workspace = true
+ratatui.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+urlencoding.workspace = true

@@ -1,0 +1,30 @@
+# Custom pattern file for helmet
+#
+# Load with: GuardBuilder::new().load_patterns_file("patterns.toml")
+#
+# Each pattern needs: name, regex, weight (0.0-1.0)
+# Optional: description
+
+[[patterns]]
+name = "internal_api_leak"
+regex = "(?:internal|private|confidential)\\s+(?:api|endpoint|service)"
+weight = 0.85
+description = "Attempts to access internal/private APIs"
+
+[[patterns]]
+name = "credential_extraction"
+regex = "(?:show|reveal|give)\\s+(?:me\\s+)?(?:the\\s+)?(?:api\\s+key|password|token|secret|credentials?)"
+weight = 0.9
+description = "Attempts to extract credentials or secrets"
+
+[[patterns]]
+name = "rag_context_injection"
+regex = "(?:the\\s+following|this)\\s+(?:document|context|passage)\\s+(?:says|states|instructs|tells)"
+weight = 0.6
+description = "RAG context injection - instructions hidden in retrieved documents"
+
+# Patterns to ignore (reduce false positives for your domain)
+ignore = [
+    "security\\s+(?:audit|review|assessment)",
+    "penetration\\s+test(?:ing)?",
+]

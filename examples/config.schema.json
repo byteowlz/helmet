@@ -1,0 +1,242 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/byteowlz/helmet/schemas/config.schema.json",
+  "title": "helmet configuration",
+  "description": "Configuration schema for helmet - prompt injection detection",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for editor support"
+    },
+    "profile": {
+      "type": "string",
+      "description": "Active configuration profile",
+      "default": "default"
+    },
+    "logging": {
+      "type": "object",
+      "description": "Logging configuration",
+      "properties": {
+        "level": {
+          "type": "string",
+          "description": "Log level",
+          "enum": ["error", "warn", "info", "debug", "trace"],
+          "default": "info"
+        },
+        "file": {
+          "type": "string",
+          "description": "Optional path for log file output. Supports ~ and environment variables."
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Runtime configuration",
+      "properties": {
+        "parallelism": {
+          "type": "integer",
+          "description": "Worker pool size. Defaults to logical CPU count.",
+          "minimum": 1
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Timeout in seconds for long-running operations",
+          "default": 60,
+          "minimum": 1
+        },
+        "fail_fast": {
+          "type": "boolean",
+          "description": "Stop on first error",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "paths": {
+      "type": "object",
+      "description": "Custom paths for data and state",
+      "properties": {
+        "data_dir": {
+          "type": "string",
+          "description": "Directory for persistent data. Supports ~ and environment variables."
+        },
+        "state_dir": {
+          "type": "string",
+          "description": "Directory for state files. Supports ~ and environment variables."
+        }
+      },
+      "additionalProperties": false
+    },
+    "guard": {
+      "type": "object",
+      "description": "Prompt injection detection guard configuration",
+      "properties": {
+        "block_threshold": {
+          "type": "number",
+          "description": "Score threshold above which to block input (0.0 - 1.0)",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.7
+        },
+        "review_threshold": {
+          "type": "number",
+          "description": "Score threshold above which to flag for review (0.0 - 1.0)",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.4
+        },
+        "pattern_weight_multiplier": {
+          "type": "number",
+          "description": "Multiplier for pattern weights to tune sensitivity",
+          "minimum": 0.0,
+          "default": 1.0
+        },
+        "enable_layer0": {
+          "type": "boolean",
+          "description": "Enable Layer 0: Preprocessing (unicode normalization, encoding detection)",
+          "default": true
+        },
+        "enable_layer1": {
+          "type": "boolean",
+          "description": "Enable Layer 1: Fast heuristics (regex patterns, keyword matching)",
+          "default": true
+        },
+        "enable_layer2": {
+          "type": "boolean",
+          "description": "Enable Layer 2: Lightweight classifier (embedding + linear model). Requires mmry or local model.",
+          "default": false
+        },
+        "enable_layer3": {
+          "type": "boolean",
+          "description": "Enable Layer 3: LLM analysis (external API). For edge cases only.",
+          "default": false
+        },
+        "custom_patterns": {
+          "type": "array",
+          "description": "Additional custom regex patterns for detection",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Pattern name"
+              },
+              "regex": {
+                "type": "string",
+                "description": "Regex pattern string"
+              },
+              "weight": {
+                "type": "number",
+                "description": "Pattern weight (0.0 - 1.0)",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "description": {
+                "type": "string",
+                "description": "Human-readable description of what this pattern detects"
+              }
+            },
+            "required": ["name", "regex", "weight"],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "ignore_patterns": {
+          "type": "array",
+          "description": "Regex patterns to ignore (for reducing false positives)",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "policy": {
+          "type": "object",
+          "description": "Policy for handling detected threats",
+          "properties": {
+            "on_block": {
+              "type": "string",
+              "enum": ["passthrough", "redact", "sanitize", "quarantine", "reject"],
+              "default": "reject"
+            },
+            "on_review": {
+              "type": "string",
+              "enum": ["passthrough", "redact", "sanitize", "quarantine", "reject"],
+              "default": "passthrough"
+            },
+            "on_allow": {
+              "type": "string",
+              "enum": ["passthrough", "redact", "sanitize", "quarantine", "reject"],
+              "default": "passthrough"
+            },
+            "redact_message": {
+              "type": "string",
+              "description": "Message returned when input is redacted"
+            },
+            "reject_message": {
+              "type": "string",
+              "description": "Message returned when input is rejected"
+            },
+            "sanitize_replacement": {
+              "type": "string",
+              "description": "Replacement text used when sanitizing"
+            },
+            "include_report": {
+              "type": "boolean",
+              "description": "Whether to include the threat report in policy results",
+              "default": false
+            },
+            "log_all": {
+              "type": "boolean",
+              "description": "Whether to log all decisions",
+              "default": false
+            },
+            "output_format": {
+              "type": "object",
+              "description": "Output formatting for policy results",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": ["plain", "tagged", "prefixed", "tagged_and_prefixed"],
+                  "default": "plain"
+                },
+                "open_tag": {
+                  "type": "string",
+                  "description": "Tag template for the start of output"
+                },
+                "close_tag": {
+                  "type": "string",
+                  "description": "Tag template for the end of output"
+                },
+                "line_prefix": {
+                  "type": "string",
+                  "description": "Prefix template for each line"
+                },
+                "prefix_each_line": {
+                  "type": "boolean",
+                  "description": "Whether to prefix each line",
+                  "default": true
+                },
+                "line_prefix_map": {
+                  "type": "object",
+                  "description": "Decision-specific line prefixes",
+                  "properties": {
+                    "allow": {"type": "string"},
+                    "review": {"type": "string"},
+                    "block": {"type": "string"}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

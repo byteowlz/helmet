@@ -1,0 +1,91 @@
+"$schema" = "https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/helmet/helmet.config.schema.json"
+
+# Example configuration for helmet.
+# Copy this file to $XDG_CONFIG_HOME/helmet/config.toml and adjust as needed.
+
+profile = "default"
+
+[logging]
+# Valid levels: error, warn, info, debug, trace
+level = "info"
+# Optional path for log file output; supports ~ and environment variables.
+# file = "~/Library/Logs/helmet.log"
+
+[runtime]
+# Override the worker pool size; defaults to logical CPU count when unset.
+# parallelism = 8
+# Timeout in seconds for long-running operations.
+timeout = 60
+fail_fast = true
+
+[paths]
+# Uncomment to move persistent data/state to custom directories.
+# data_dir = "$XDG_DATA_HOME/helmet"
+# state_dir = "$XDG_STATE_HOME/helmet"
+
+[guard]
+# Score threshold above which to block input (0.0 - 1.0).
+# Higher = fewer blocks but more false negatives.
+block_threshold = 0.7
+# Score threshold above which to flag for review (0.0 - 1.0).
+# Lower = more items flagged.
+review_threshold = 0.4
+# Multiplier for pattern weights. Increase for stricter detection, decrease to relax.
+pattern_weight_multiplier = 1.0
+# Layer toggles
+enable_layer0 = true   # Preprocessing (unicode normalization, encoding detection)
+enable_layer1 = true   # Fast heuristics (regex patterns, keyword matching)
+enable_layer2 = false  # Lightweight classifier (requires mmry or local model)
+enable_layer3 = false  # LLM analysis (requires external API)
+# Deterministic Layer 1 controls
+max_input_tokens = 4096
+max_decoded_bytes = 8192
+max_decoded_segments = 32
+strip_block_threshold = 24
+encoded_block_threshold = 6
+max_token_char_ratio = 1.8
+
+# Custom patterns for domain-specific detection.
+# custom_patterns = [
+#   { name = "internal_api", regex = "(?:call|access)\\s+internal_api", weight = 0.8, description = "Attempts to access internal API" }
+# ]
+
+# Patterns to ignore (reduce false positives for your domain).
+# ignore_patterns = ["security\\s+researcher", "penetration\\s+test"]
+
+[guard.policy]
+# What to do when input is blocked (high confidence threat).
+# Options: passthrough, redact, sanitize, quarantine, reject
+on_block = "reject"
+# What to do when input needs review (medium confidence).
+on_review = "passthrough"
+# What to do when input is allowed (safe).
+on_allow = "passthrough"
+# Message returned when input is redacted.
+redact_message = "[REDACTED: potential prompt injection detected]"
+# Message returned when input is rejected.
+reject_message = "Input rejected: prompt injection detected."
+# Replacement text used when sanitizing (replaces stripped patterns).
+sanitize_replacement = "[...]"
+# Whether to include the full threat report in policy results.
+include_report = false
+# Whether to log all decisions (not just threats).
+log_all = false
+
+[guard.policy.output_format]
+# Output format mode: plain, tagged, prefixed, tagged_and_prefixed
+mode = "plain"
+# Tag template for the start of output (used in tagged modes)
+open_tag = "<helmet decision='{decision}' score='{score}'>"
+# Tag template for the end of output
+close_tag = "</helmet>"
+# Line prefix template (used in prefixed modes)
+line_prefix = "[HELMET:{decision}] "
+# Whether to prefix each line (true) or only first line (false)
+prefix_each_line = true
+
+[guard.policy.output_format.line_prefix_map]
+# Optional decision-specific prefixes (overrides line_prefix)
+# allow = "[SAFE] "
+# review = "[REVIEW] "
+# block = "[BLOCK] "

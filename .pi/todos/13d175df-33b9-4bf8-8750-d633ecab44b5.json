@@ -1,0 +1,41 @@
+{
+  "todos": [
+    {
+      "id": "1",
+      "content": "Wire up custom_patterns and ignore_patterns from config into the scanner",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "2",
+      "content": "Add policy module: configurable actions for BLOCK/REVIEW/ALLOW decisions",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "3",
+      "content": "Add GuardBuilder for fluent, composable guard construction",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "4",
+      "content": "Add external pattern file loading (TOML/JSON pattern definitions)",
+      "status": "completed",
+      "priority": "medium"
+    },
+    {
+      "id": "5",
+      "content": "Add scan --policy flag to CLI for redact/quarantine/log actions",
+      "status": "completed",
+      "priority": "medium"
+    },
+    {
+      "id": "6",
+      "content": "Tests + clippy + verify",
+      "status": "completed",
+      "priority": "high"
+    }
+  ],
+  "updated_at": "2026-02-26T08:22:36.407Z"
+}
