@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.0 - 2026-06-26
+
+- Added document chunking: `Guard::check_document` windows large/multi-line inputs (overlap + merge) instead of truncating, with `ChunkConfig`/`DocumentReport` and DoS caps
+- Added `helmet-cli scan-file` to scan a whole file/artifact as one document (human + JSON/YAML)
+- Added detection-quality benchmark: `helmet-cli eval` per-split/per-source breakdown, threshold sweep, and a `recall@FPR` objective gated on over-defense (`--by-split`/`--sweep`/`--fold`/`--max-fpr`/`--over-defense-split`)
+- Added `helmet-bench` dev crate: corpus `ingest` (field-mapping + dedup + train/val/test folds) and obfuscation `augment`
+- Added benchmark corpus tooling: `scripts/fetch-bench-data.sh`, `data/bench/manifest.toml`, and the detection-benchmark spec
 - Added policy engine with configurable actions (passthrough/redact/sanitize/quarantine/reject)
 - Added policy output formatting (tags, line prefixes, template placeholders)
 - Added scan and eval commands to helmet-cli with streaming and policy presets

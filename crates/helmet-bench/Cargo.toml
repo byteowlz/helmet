@@ -1,0 +1,22 @@
+[package]
+name = "helmet-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Dev-only tooling for Helmet's detection-quality benchmark (corpus normalize + obfuscation augmentation)."
+
+# Intentionally does NOT inherit the strict workspace lints: this is a non-shipped
+# dev utility that does file I/O and prints summaries.
+
+[[bin]]
+name = "helmet-bench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+urlencoding = { workspace = true }
+base64 = "0.22"

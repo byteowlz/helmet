@@ -11,7 +11,9 @@ use log::{LevelFilter, debug, info};
 
 use helmet_core::paths::write_default_config;
 use helmet_core::threats::Decision;
-use helmet_core::{AppConfig, AppPaths, Guard, default_cache_dir, default_parallelism};
+use helmet_core::{
+    AppConfig, AppPaths, ChunkConfig, Guard, default_cache_dir, default_parallelism,
+};
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -31,6 +33,7 @@ fn try_main() -> Result<()> {
 
     match cli.command {
         Command::Scan(cmd) => handle_scan(&ctx, cmd),
+        Command::ScanFile(cmd) => handle_scan_file(&ctx, cmd),
         Command::Eval(cmd) => handle_eval(&ctx, cmd),
         Command::Run(cmd) => handle_run(&mut ctx, cmd),
         Command::Init(cmd) => handle_init(&ctx, cmd),
@@ -116,6 +119,8 @@ pub enum ColorOption {
 enum Command {
     /// Scan input for prompt injection. Reads stdin line-by-line or a single argument.
     Scan(ScanCommand),
+    /// Scan a whole file/artifact as one document (windowed + merged, not line-by-line).
+    ScanFile(ScanFileCommand),
     /// Evaluate a JSONL dataset and report detection metrics.
     Eval(EvalCommand),
     /// Execute the CLI's primary behavior
@@ -177,6 +182,29 @@ struct ScanCommand {
     /// Output the policy result (action + output text) instead of the raw report
     #[arg(long)]
     apply: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+struct ScanFileCommand {
+    /// Path to the file/artifact to scan as one document (windowed, not line-by-line).
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+
+    /// Tokens per window (default: guard `max_input_tokens`).
+    #[arg(long)]
+    chunk_tokens: Option<usize>,
+
+    /// Overlap tokens between consecutive windows.
+    #[arg(long, default_value_t = 256)]
+    overlap_tokens: usize,
+
+    /// Max bytes scanned (DoS guard).
+    #[arg(long, default_value_t = 8 * 1024 * 1024)]
+    max_bytes: usize,
+
+    /// Max windows scanned (DoS guard).
+    #[arg(long, default_value_t = 512)]
+    max_chunks: usize,
 }
 
 /// Compact scan result for streaming output
@@ -543,9 +571,145 @@ struct EvalCommand {
     /// Field name for label (0=safe, 1=injection)
     #[arg(long, default_value = "label")]
     label_field: String,
+
+    /// Break metrics down per `split` field (benchmark corpus grouping).
+    #[arg(long)]
+    by_split: bool,
+
+    /// Sweep the decision threshold over raw scores: recall/FPR/F1 grid,
+    /// recall@1%FPR, and best-F1 threshold. Disambiguates tuning vs coverage gaps.
+    #[arg(long)]
+    sweep: bool,
+
+    /// Restrict evaluation to one fold (train|val|test). Rows lacking the field are skipped.
+    #[arg(long)]
+    fold: Option<String>,
+
+    /// Max FPR for the recall@FPR objective and the over-defense gate epsilon.
+    #[arg(long, default_value_t = 0.01)]
+    max_fpr: f64,
+
+    /// Which `split` value holds the over-defense (benign-with-trigger-words) rows
+    /// that the gate must not flag. Any source tagged with this split counts.
+    #[arg(long, default_value = "benign_hard")]
+    over_defense_split: String,
 }
 
-#[derive(serde::Serialize)]
+/// One scored sample retained for per-split/per-source breakdown and threshold sweeping.
+struct EvalSample {
+    score: f32,
+    is_injection: bool,
+    detected: bool,
+    split: String,
+    source: String,
+}
+
+/// Print a group breakdown (recall on attacks, FPR on benign) at configured thresholds.
+fn print_groups(title: &str, stats: &[GroupStat]) {
+    println!("--- {title} (at configured thresholds) ---");
+    println!("  {:<18}    n   recall      fpr", "group");
+    for g in stats {
+        let recall = g
+            .recall
+            .map_or_else(|| "  -  ".to_owned(), |r| format!("{:.1}%", r * 100.0));
+        let fpr = g
+            .fpr
+            .map_or_else(|| "  -  ".to_owned(), |f| format!("{:.1}%", f * 100.0));
+        println!("  {:<18} {:>4}  {recall:>7}  {fpr:>7}", g.name, g.n);
+    }
+    println!();
+}
+
+/// Threshold sweep over raw scores: `detected = score >= t`.
+fn print_sweep(samples: &[EvalSample]) {
+    let attacks = samples.iter().filter(|s| s.is_injection).count();
+    let benign = samples.len() - attacks;
+
+    let stats_at = |t: f32| -> (f64, f64, f64, f64) {
+        let mut tp = 0usize;
+        let mut fp = 0usize;
+        for s in samples {
+            if s.score >= t {
+                if s.is_injection {
+                    tp += 1;
+                } else {
+                    fp += 1;
+                }
+            }
+        }
+        let recall = if attacks > 0 {
+            tp as f64 / attacks as f64
+        } else {
+            f64::NAN
+        };
+        let fpr = if benign > 0 {
+            fp as f64 / benign as f64
+        } else {
+            f64::NAN
+        };
+        let precision = if tp + fp > 0 {
+            tp as f64 / (tp + fp) as f64
+        } else {
+            f64::NAN
+        };
+        let f1 = if precision.is_finite() && recall.is_finite() && precision + recall > 0.0 {
+            2.0 * precision * recall / (precision + recall)
+        } else {
+            f64::NAN
+        };
+        (recall, fpr, precision, f1)
+    };
+
+    println!("--- Threshold sweep (detected = score >= t) ---");
+    println!("      t    recall      fpr  precision      f1");
+    for &t in &[
+        0.0f32, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90,
+    ] {
+        let (recall, fpr, precision, f1) = stats_at(t);
+        println!(
+            "  {t:5.2}  {:7.1}%  {:7.1}%   {:7.1}%   {:.3}",
+            recall * 100.0,
+            fpr * 100.0,
+            precision * 100.0,
+            f1
+        );
+    }
+
+    // Fine sweep over observed scores for best-F1 and recall@1%FPR.
+    let mut scores: Vec<f32> = samples.iter().map(|s| s.score).collect();
+    scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    scores.dedup();
+    let mut best_f1 = 0.0f64;
+    let mut best_t = f32::NAN;
+    let mut recall_at_1fpr = 0.0f64;
+    let mut t_at_1fpr = f32::NAN;
+    for &t in &scores {
+        let (recall, fpr, _p, f1) = stats_at(t);
+        if f1.is_finite() && f1 > best_f1 {
+            best_f1 = f1;
+            best_t = t;
+        }
+        if fpr.is_finite() && fpr <= 0.01 && recall > recall_at_1fpr {
+            recall_at_1fpr = recall;
+            t_at_1fpr = t;
+        }
+    }
+    println!();
+    if best_t.is_finite() {
+        println!("Best F1:        {best_f1:.3} at t={best_t:.3}");
+    }
+    if benign > 0 && t_at_1fpr.is_finite() {
+        println!(
+            "Recall@1%FPR:   {:.1}% at t={t_at_1fpr:.3}",
+            recall_at_1fpr * 100.0
+        );
+    } else if benign == 0 {
+        println!("Recall@1%FPR:   n/a (no benign samples in corpus)");
+    }
+    println!();
+}
+
+#[derive(serde::Serialize, Clone)]
 struct EvalMetrics {
     total: usize,
     true_positives: usize,
@@ -562,6 +726,162 @@ struct EvalMetrics {
     block_count: usize,
     review_count: usize,
     allow_count: usize,
+}
+
+/// Recall (on attacks) and FPR (on benign) for one group (a split or a source).
+#[derive(serde::Serialize)]
+struct GroupStat {
+    name: String,
+    n: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recall: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fpr: Option<f64>,
+}
+
+/// Group samples by a key (split or source), computing recall/FPR at configured thresholds.
+fn group_stats(samples: &[EvalSample], key: impl Fn(&EvalSample) -> &str) -> Vec<GroupStat> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<&str, (usize, usize, usize, usize)> = BTreeMap::new();
+    for s in samples {
+        let e = map.entry(key(s)).or_insert((0, 0, 0, 0));
+        if s.is_injection {
+            e.0 += 1;
+            if s.detected {
+                e.1 += 1;
+            }
+        } else {
+            e.2 += 1;
+            if s.detected {
+                e.3 += 1;
+            }
+        }
+    }
+    map.into_iter()
+        .map(|(name, (atk, atk_det, ben, ben_flag))| GroupStat {
+            name: name.to_owned(),
+            n: atk + ben,
+            recall: (atk > 0).then(|| atk_det as f64 / atk as f64),
+            fpr: (ben > 0).then(|| ben_flag as f64 / ben as f64),
+        })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct SweepSummary {
+    best_f1: f64,
+    best_f1_threshold: f64,
+    recall_at_max_fpr: f64,
+    threshold_at_max_fpr: f64,
+    max_fpr: f64,
+}
+
+/// The fitness function for automated optimization: recall achievable while FPR stays
+/// under `max_fpr`, plus the best-F1 operating point. Computed over raw scores.
+fn sweep_summary(samples: &[EvalSample], max_fpr: f64) -> SweepSummary {
+    let attacks = samples.iter().filter(|s| s.is_injection).count();
+    let benign = samples.len() - attacks;
+    let mut scores: Vec<f32> = samples.iter().map(|s| s.score).collect();
+    scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    scores.dedup();
+    let mut best_f1 = 0.0;
+    let mut best_t = f64::NAN;
+    let mut recall_at = 0.0;
+    let mut t_at = f64::NAN;
+    for &t in &scores {
+        let mut tp = 0usize;
+        let mut fp = 0usize;
+        for s in samples {
+            if s.score >= t {
+                if s.is_injection {
+                    tp += 1;
+                } else {
+                    fp += 1;
+                }
+            }
+        }
+        let recall = if attacks > 0 {
+            tp as f64 / attacks as f64
+        } else {
+            0.0
+        };
+        let fpr = if benign > 0 {
+            fp as f64 / benign as f64
+        } else {
+            0.0
+        };
+        let precision = if tp + fp > 0 {
+            tp as f64 / (tp + fp) as f64
+        } else {
+            0.0
+        };
+        let f1 = if precision + recall > 0.0 {
+            2.0 * precision * recall / (precision + recall)
+        } else {
+            0.0
+        };
+        if f1 > best_f1 {
+            best_f1 = f1;
+            best_t = f64::from(t);
+        }
+        if benign > 0 && fpr <= max_fpr && recall > recall_at {
+            recall_at = recall;
+            t_at = f64::from(t);
+        }
+    }
+    SweepSummary {
+        best_f1,
+        best_f1_threshold: best_t,
+        recall_at_max_fpr: recall_at,
+        threshold_at_max_fpr: t_at,
+        max_fpr,
+    }
+}
+
+/// The single optimization objective + over-defense gate.
+#[derive(serde::Serialize)]
+struct Objective {
+    /// recall@max_fpr — what an optimizer should MAXIMIZE.
+    recall_at_max_fpr: f64,
+    /// FPR on the over-defense split (`benign_hard`) at configured thresholds.
+    benign_hard_fpr: Option<f64>,
+    max_fpr: f64,
+    /// over-defense gate epsilon (benign_hard FPR must stay <= this).
+    epsilon: f64,
+    /// true if the over-defense gate holds.
+    passed: bool,
+}
+
+fn objective(samples: &[EvalSample], max_fpr: f64, epsilon: f64, over_defense_split: &str) -> Objective {
+    let sweep = sweep_summary(samples, max_fpr);
+    let mut bh_total = 0usize;
+    let mut bh_flagged = 0usize;
+    for s in samples.iter().filter(|s| s.split == over_defense_split) {
+        bh_total += 1;
+        if s.detected {
+            bh_flagged += 1;
+        }
+    }
+    let benign_hard_fpr = (bh_total > 0).then(|| bh_flagged as f64 / bh_total as f64);
+    let passed = benign_hard_fpr.is_none_or(|f| f <= epsilon);
+    Objective {
+        recall_at_max_fpr: sweep.recall_at_max_fpr,
+        benign_hard_fpr,
+        max_fpr,
+        epsilon,
+        passed,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ExtendedReport {
+    metrics: EvalMetrics,
+    per_split: Vec<GroupStat>,
+    per_source: Vec<GroupStat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sweep: Option<SweepSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objective: Option<Objective>,
 }
 
 fn print_policy_result(ctx: &RuntimeContext, result: &helmet_core::PolicyResult) -> Result<()> {
@@ -584,6 +904,54 @@ fn print_policy_result(ctx: &RuntimeContext, result: &helmet_core::PolicyResult)
     Ok(())
 }
 
+fn handle_scan_file(ctx: &RuntimeContext, cmd: ScanFileCommand) -> Result<()> {
+    let guard =
+        Guard::with_config(ctx.config.guard.clone()).context("creating guard from config")?;
+    let text = std::fs::read_to_string(&cmd.path)
+        .with_context(|| format!("reading {}", cmd.path.display()))?;
+
+    let cfg = ChunkConfig {
+        chunk_tokens: cmd.chunk_tokens.unwrap_or(guard.config().max_input_tokens),
+        overlap_tokens: cmd.overlap_tokens,
+        max_document_bytes: cmd.max_bytes,
+        max_chunks: cmd.max_chunks,
+    };
+    let report = guard.check_document(&text, &cfg);
+
+    if ctx.common.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).context("serializing document report")?
+        );
+    } else if ctx.common.yaml {
+        println!(
+            "{}",
+            serde_yaml::to_string(&report).context("serializing document report")?
+        );
+    } else {
+        println!("=== Helmet Document Scan: {} ===", cmd.path.display());
+        println!("Decision:     {}", report.decision);
+        println!("Score:        {:.4}", report.score);
+        println!("Chunks:       {}", report.chunks_scanned);
+        if !report.reason_codes.is_empty() {
+            println!("Reason codes: {}", report.reason_codes.join(", "));
+        }
+        if report.matches.is_empty() {
+            println!("Matches:      none");
+        } else {
+            println!("Matches ({}):", report.matches.len());
+            for m in &report.matches {
+                let snippet: String = m.matched_text.chars().take(60).collect();
+                println!(
+                    "  @{:>8} {:?} (w={:.2}) {snippet}",
+                    m.position.start, m.pattern, m.weight
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn handle_eval(ctx: &RuntimeContext, cmd: EvalCommand) -> Result<()> {
     let guard =
         Guard::with_config(ctx.config.guard.clone()).context("creating guard from config")?;
@@ -601,6 +969,8 @@ fn handle_eval(ctx: &RuntimeContext, cmd: EvalCommand) -> Result<()> {
     let mut allow_count = 0usize;
     let mut total_latency_us = 0u64;
     let mut parse_errors = 0usize;
+    let collect_samples = cmd.by_split || cmd.sweep;
+    let mut samples: Vec<EvalSample> = Vec::new();
 
     let start = Instant::now();
 
@@ -630,6 +1000,13 @@ fn handle_eval(ctx: &RuntimeContext, cmd: EvalCommand) -> Result<()> {
             }
         };
 
+        // Held-out fold filter: skip rows not in the requested fold (not an error).
+        if let Some(want) = cmd.fold.as_deref()
+            && parsed.get("fold").and_then(serde_json::Value::as_str) != Some(want)
+        {
+            continue;
+        }
+
         // Support both integer labels and string labels
         let is_injection = match parsed.get(&cmd.label_field) {
             Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0) == 1,
@@ -658,6 +1035,26 @@ fn handle_eval(ctx: &RuntimeContext, cmd: EvalCommand) -> Result<()> {
 
         // For metrics: BLOCK or REVIEW = detected, ALLOW = not detected
         let detected = report.decision != Decision::Allow;
+
+        if collect_samples {
+            let split = parsed
+                .get("split")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("all")
+                .to_owned();
+            let source = parsed
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("all")
+                .to_owned();
+            samples.push(EvalSample {
+                score: report.score,
+                is_injection,
+                detected,
+                split,
+                source,
+            });
+        }
 
         match (is_injection, detected) {
             (true, true) => tp += 1,
@@ -728,16 +1125,30 @@ fn handle_eval(ctx: &RuntimeContext, cmd: EvalCommand) -> Result<()> {
         allow_count,
     };
 
+    let extended = collect_samples.then(|| ExtendedReport {
+        metrics: metrics.clone(),
+        per_split: group_stats(&samples, |s| s.split.as_str()),
+        per_source: group_stats(&samples, |s| s.source.as_str()),
+        sweep: cmd.sweep.then(|| sweep_summary(&samples, cmd.max_fpr)),
+        objective: cmd
+            .sweep
+            .then(|| objective(&samples, cmd.max_fpr, cmd.max_fpr, &cmd.over_defense_split)),
+    });
+
     if ctx.common.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&metrics).context("serializing metrics")?
-        );
+        let out = match &extended {
+            Some(e) => serde_json::to_string_pretty(e),
+            None => serde_json::to_string_pretty(&metrics),
+        }
+        .context("serializing metrics")?;
+        println!("{out}");
     } else if ctx.common.yaml {
-        println!(
-            "{}",
-            serde_yaml::to_string(&metrics).context("serializing metrics")?
-        );
+        let out = match &extended {
+            Some(e) => serde_yaml::to_string(e),
+            None => serde_yaml::to_string(&metrics),
+        }
+        .context("serializing metrics")?;
+        println!("{out}");
     } else {
         println!("=== Helmet Evaluation: {} ===", source.label());
         println!();
@@ -766,6 +1177,32 @@ fn handle_eval(ctx: &RuntimeContext, cmd: EvalCommand) -> Result<()> {
         println!("BLOCK:  {block_count}");
         println!("REVIEW: {review_count}");
         println!("ALLOW:  {allow_count}");
+        println!();
+        if cmd.by_split {
+            print_groups("Per-split", &group_stats(&samples, |s| s.split.as_str()));
+            print_groups("Per-source", &group_stats(&samples, |s| s.source.as_str()));
+        }
+        if cmd.sweep {
+            print_sweep(&samples);
+            let obj = objective(&samples, cmd.max_fpr, cmd.max_fpr, &cmd.over_defense_split);
+            println!("--- Objective (optimization target) ---");
+            println!(
+                "Recall@{:.0}%FPR:  {:.1}%",
+                obj.max_fpr * 100.0,
+                obj.recall_at_max_fpr * 100.0
+            );
+            match obj.benign_hard_fpr {
+                Some(f) => println!(
+                    "{} FPR: {:.2}% (gate <= {:.2}%)",
+                    cmd.over_defense_split,
+                    f * 100.0,
+                    obj.epsilon * 100.0
+                ),
+                None => println!("{} FPR: n/a (no rows)", cmd.over_defense_split),
+            }
+            println!("Over-defense gate: {}", if obj.passed { "PASS" } else { "FAIL" });
+            println!();
+        }
     }
 
     Ok(())
